@@ -92,41 +92,88 @@ const fetchChildWallets = async (page, addr) => {
   return assembledWallets;
 };
 
+const searchForBlockNumber = async (page, address, blockNumber) => {
+  // this probably will help optimize the search
+  // const toPeek = `#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a`;
+  // const latestBlockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
+  // if(+blockNumber - latestBlockNumber < 1000) {
+
+  // }
+  // sort of binary search to quickly get to the page
+  let pageFound = false;
+  let toPeek = `#ContentPlaceHolder1_topPageDiv > nav > ul > li:nth-child(3) > span > strong:nth-child(2)`;
+  const amountOfPages = await page.$eval(toPeek, ele => ele.innerHTML);
+  let toSearch = Number.parseInt((+amountOfPages) / 2);
+  while(!pageFound) {
+    await page.goto(`https://bscscan.com/txs?a=${address}&p=${toSearch}`);
+    await page.waitForSelector('#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a');
+    toPeek = `#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a`;
+    let firstBlockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
+    if(firstBlockNumber < blockNumber) {
+      toSearch = Number.parseInt(toSearch / 2);
+    } else {
+      for(let i = 1; i <= 50; i++) {
+        toPeek = `#paywall_mask > table > tbody > tr:nth-child(${i}) > td.d-none.d-sm-table-cell > a`;
+        let bn = await page.$eval(toPeek, ele => ele.innerHTML);
+        console.log(`${blockNumber == bn ? '[!!!!]' : ''} looking for ${blockNumber}, but found ${bn}, which is: ${blockNumber == bn}`);
+        if(bn == blockNumber) pageFound = true;
+        if(pageFound) return toSearch;
+        if(i == 50 && bn > blockNumber) toSearch = Number.parseInt(toSearch + toSearch / 2);
+        else if(i == 50 && bn < blockNumber) toSearch = Number.parseInt(toSearch / 2);
+        console.log(`found: ${pageFound} and next page is ${toSearch} p.`);
+      }
+    }
+    await delay(750);
+  }
+};
+
 const fetchAllTransactionHashes = async (page, addrs) => {
   let assembledTxs = [];
   for(let i = 0; i < addrs.length; i++) {
     const { address, blockNumber } = addrs[i];
+    assembledTxs.push({});
+    assembledTxs[assembledTxs.length - 1] = {
+      address,
+      transactions: []
+    };
+    const limit = await searchForBlockNumber(page, address, blockNumber);
+    console.log(`limit for ${address} is ${limit}`);
     // scrap transactions, collect FILTERed ones
-    let pageLimit = 1;
-    let currentPage = 0;
-    let lastBlockNumber = Number.MAX_SAFE_INTEGER;
+    let pageLimit = 0;
+    let currentPage = limit;
     try {
-      while(currentPage < pageLimit && lastBlockNumber > blockNumber) {
-        const toGo = currentPage + 1;
+      while(currentPage > pageLimit) {
+        const toGo = currentPage;
         await page.goto(`https://bscscan.com/txs?a=${address}&p=${(toGo)}`);
         await page.waitForSelector('#paywall_mask > table > tbody > tr:nth-child(1) > td:nth-child(2) > span > a');
-        const pLimitPos = '#ctl00 > div.d-md-flex.justify-content-between.my-3 > ul > li:nth-child(3) > span > strong:nth-child(2)';
-        pageLimit = await page.$eval(pLimitPos, ele => ele.innerHTML);
+        // const pLimitPos = '#ctl00 > div.d-md-flex.justify-content-between.my-3 > ul > li:nth-child(3) > span > strong:nth-child(2)';
+        // pageLimit = await page.$eval(pLimitPos, ele => ele.innerHTML);
         try {
-          for(let i = 1; i <= 50; i++) {
-            let toPeek = `#paywall_mask > table > tbody > tr:nth-child(${i}) > td.text-center > span`;
+          for(let j = 50; j >= 1; j--) {
+            let toPeek = `#paywall_mask > table > tbody > tr:nth-child(${j}) > td.text-center > span`;
             const isOut = (await page.$eval(toPeek, ele => ele.innerHTML)).toLowerCase() == 'out';
-            toPeek = `#paywall_mask > table > tbody > tr:nth-child(${i}) > td:nth-child(2) > span > a`;
+            toPeek = `#paywall_mask > table > tbody > tr:nth-child(${j}) > td:nth-child(2) > span > a`;
             const tx = await page.$eval(toPeek, ele => ele.innerHTML);
-            toPeek = `#paywall_mask > table > tbody > tr:nth-child(${i}) > td.d-none.d-sm-table-cell > a`;
-            lastBlockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
-            if(lastBlockNumber > blockNumber) console.log(tx); else console.log('block number too low');
-            if(lastBlockNumber > blockNumber) assembledTxs.push({
-              tx,
-              isOut,
-              blockNumber: lastBlockNumber
-            });
+            toPeek = `#paywall_mask > table > tbody > tr:nth-child(${j}) > td.d-none.d-sm-table-cell > a`;
+            const blockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
+            if(!isOut) {
+              console.log('breaking the loop');
+              currentPage = -1;
+              break;
+            } else {
+              console.log(`putting into array for ${j} time: ${isOut} - ${tx} - ${blockNumber}`);
+              assembledTxs[assembledTxs.length - 1].transactions.push({
+                tx,
+                isOut,
+                blockNumber
+              });
+            }
           }
         } catch(err) {
           console.log(err);
         }
         await delay(800); // this delay is probably not needed
-        currentPage = toGo;
+        currentPage = toGo - 1;
       }
     } catch(e) {
       console.log(e);
