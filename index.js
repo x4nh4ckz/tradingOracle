@@ -92,6 +92,9 @@ const fetchChildWallets = async (page, addr) => {
   return assembledWallets;
 };
 
+// TODO:
+// 1. fix search as it breaks e.g. in 1,2,3,4,5,6 array
+// 2. compare blockNumbers to less blocks
 const searchForBlockNumber = async (page, address, blockNumber) => {
   // this probably will help optimize the search
   // const toPeek = `#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a`;
@@ -127,6 +130,8 @@ const searchForBlockNumber = async (page, address, blockNumber) => {
   }
 };
 
+// Huge issue with for loop inside while loop inside for loop, needs to be reorganized but the logic is correct
+// In addition current isOut is not working as intended, needs to be reimplemented
 const fetchAllTransactionHashes = async (page, addrs) => {
   let assembledTxs = [];
   for(let i = 0; i < addrs.length; i++) {
