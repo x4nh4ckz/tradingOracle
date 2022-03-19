@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import Web3 from 'web3';
 import puppeteer from 'puppeteer';
+import abiDecoder from 'abi-decoder';
+import db from './models/index.cjs';
 
 const browserArgs = [
   '--autoplay-policy=user-gesture-required',
@@ -40,9 +42,7 @@ const browserArgs = [
   '--use-mock-keychain',
 ];
 
-// TODO:
-// 1. Make browser instance single for all functions and create pages per function
-function delay(time) {
+const delay = (time) => {
   return new Promise(function(resolve) { 
     setTimeout(resolve, time)
   });
@@ -50,7 +50,7 @@ function delay(time) {
 
 // fetching child wallets from parent wallet, keeping transaction hash to fetch block number
 // block number will be used as a timestamp limit in the future functions
-const fetchChildWallets = async (page, addr) => {
+const fetchChildWallets = async (page, addr, maxWallets) => {
   let assembledWallets = [];
   // scrap wallets, only OUT txs are pushed to the array
   let pageLimit = 1;
@@ -82,56 +82,29 @@ const fetchChildWallets = async (page, addr) => {
               address,
               blockNumber
             });
+            if(maxWallets != 0 && maxWallets <= assembledWallets.length) break;
           }
         }
       }
     } catch(err) {}
     await delay(750); // this delay is probably not needed
     currentPage = toGo;
+    if(maxWallets != 0 && maxWallets <= assembledWallets.length) break;
   }
   return assembledWallets;
 };
 
-// TODO:
-// 1. fix search as it breaks e.g. in 1,2,3,4,5,6 array
-// 2. compare blockNumbers to less blocks
-const searchForBlockNumber = async (page, address, blockNumber) => {
-  // this probably will help optimize the search
-  // const toPeek = `#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a`;
-  // const latestBlockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
-  // if(+blockNumber - latestBlockNumber < 1000) {
-
-  // }
-  // sort of binary search to quickly get to the page
-  let pageFound = false;
-  let toPeek = `#ContentPlaceHolder1_topPageDiv > nav > ul > li:nth-child(3) > span > strong:nth-child(2)`;
-  const amountOfPages = await page.$eval(toPeek, ele => ele.innerHTML);
-  let toSearch = Number.parseInt((+amountOfPages) / 2);
-  while(!pageFound) {
-    await page.goto(`https://bscscan.com/txs?a=${address}&p=${toSearch}`);
-    await page.waitForSelector('#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a');
-    toPeek = `#paywall_mask > table > tbody > tr:nth-child(1) > td.d-none.d-sm-table-cell > a`;
-    let firstBlockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
-    if(firstBlockNumber < blockNumber) {
-      toSearch = Number.parseInt(toSearch / 2);
-    } else {
-      for(let i = 1; i <= 50; i++) {
-        toPeek = `#paywall_mask > table > tbody > tr:nth-child(${i}) > td.d-none.d-sm-table-cell > a`;
-        let bn = await page.$eval(toPeek, ele => ele.innerHTML);
-        console.log(`${blockNumber == bn ? '[!!!!]' : ''} looking for ${blockNumber}, but found ${bn}, which is: ${blockNumber == bn}`);
-        if(bn == blockNumber) pageFound = true;
-        if(pageFound) return toSearch;
-        if(i == 50 && bn > blockNumber) toSearch = Number.parseInt(toSearch + toSearch / 2);
-        else if(i == 50 && bn < blockNumber) toSearch = Number.parseInt(toSearch / 2);
-        console.log(`found: ${pageFound} and next page is ${toSearch} p.`);
-      }
+const filterTxs = async (txs) => {
+  let limit = 0;
+  for(let i = txs.length - 2; i >= 0; i--) {
+    if(!txs[i].isOut) {
+      limit = i;
+      break;
     }
-    await delay(750);
   }
+  return txs.slice(limit + 1, txs.length - 1);
 };
 
-// Huge issue with for loop inside while loop inside for loop, needs to be reorganized but the logic is correct
-// In addition current isOut is not working as intended, needs to be reimplemented
 const fetchAllTransactionHashes = async (page, addrs) => {
   let assembledTxs = [];
   for(let i = 0; i < addrs.length; i++) {
@@ -141,18 +114,14 @@ const fetchAllTransactionHashes = async (page, addrs) => {
       address,
       transactions: []
     };
-    const limit = await searchForBlockNumber(page, address, blockNumber);
-    console.log(`limit for ${address} is ${limit}`);
     // scrap transactions, collect FILTERed ones
-    let pageLimit = 0;
-    let currentPage = limit;
+    let pageLimit = 1;
+    let currentPage = 0;
     try {
-      while(currentPage > pageLimit) {
-        const toGo = currentPage;
+      while(currentPage < pageLimit) {
+        const toGo = currentPage + 1;
         await page.goto(`https://bscscan.com/txs?a=${address}&p=${(toGo)}`);
         await page.waitForSelector('#paywall_mask > table > tbody > tr:nth-child(1) > td:nth-child(2) > span > a');
-        // const pLimitPos = '#ctl00 > div.d-md-flex.justify-content-between.my-3 > ul > li:nth-child(3) > span > strong:nth-child(2)';
-        // pageLimit = await page.$eval(pLimitPos, ele => ele.innerHTML);
         try {
           for(let j = 50; j >= 1; j--) {
             let toPeek = `#paywall_mask > table > tbody > tr:nth-child(${j}) > td.text-center > span`;
@@ -160,25 +129,31 @@ const fetchAllTransactionHashes = async (page, addrs) => {
             toPeek = `#paywall_mask > table > tbody > tr:nth-child(${j}) > td:nth-child(2) > span > a`;
             const tx = await page.$eval(toPeek, ele => ele.innerHTML);
             toPeek = `#paywall_mask > table > tbody > tr:nth-child(${j}) > td.d-none.d-sm-table-cell > a`;
-            const blockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
-            if(!isOut) {
-              console.log('breaking the loop');
-              currentPage = -1;
+            const bNumber = await page.$eval(toPeek, ele => ele.innerHTML);
+            toPeek = `#ctl00 > div.d-md-flex.justify-content-between.my-3 > ul > li:nth-child(3) > span > strong:nth-child(2)`;
+            pageLimit = await page.$eval(toPeek, ele => ele.innerHTML);
+            assembledTxs[assembledTxs.length - 1].transactions.push({
+              tx,
+              isOut,
+              blockNumber
+            });
+            if(blockNumber == bNumber) {
+              console.log('breaking out because we found initial deposit tx');
+              pageLimit = -1;
               break;
-            } else {
-              console.log(`putting into array for ${j} time: ${isOut} - ${tx} - ${blockNumber}`);
-              assembledTxs[assembledTxs.length - 1].transactions.push({
-                tx,
-                isOut,
-                blockNumber
-              });
             }
           }
         } catch(err) {
           console.log(err);
         }
         await delay(800); // this delay is probably not needed
-        currentPage = toGo - 1;
+        if(pageLimit < 0) break;
+        currentPage = toGo;
+      }
+      if(assembledTxs[assembledTxs.length - 1].transactions[assembledTxs[assembledTxs.length - 1].transactions.length - 1].blockNumber == blockNumber) {
+        console.log('time to clean up the txs and trim excessive ones');
+        const filteredArray = await filterTxs(assembledTxs[assembledTxs.length - 1].transactions);
+        assembledTxs[assembledTxs.length - 1].transactions = filteredArray;
       }
     } catch(e) {
       console.log(e);
@@ -187,21 +162,61 @@ const fetchAllTransactionHashes = async (page, addrs) => {
   return assembledTxs;
 };
 
-// probably deprecated function as bscscan is providing us with block numbers now
-// const fetchBlockNumber = async (data) => {
-//   const web3 = new Web3(process.env.WEB3_PROVIDER);
-//   return await data.map(async entry => {
-//     const log = await web3.eth.getTransaction(entry.tx);
-//     return {
-//       blockNumber: log.blockNumber,
-//       ...entry
-//     };
-//   });
-// };
-
-const listenToTxs = (addr) => {
+const fetchTxData = async (page, addrs) => {
+  let final = [];
   const web3 = new Web3(process.env.WEB3_PROVIDER);
+  for(let i = 0; i < addrs.length; i++) {
+    const addr = addrs[i];
+    const transactions = addr.transactions;
+    final.push({});
+    final[final.length - 1] = {
+      address: addr.address,
+      transactions: []
+    };
+    for(let j = 0; j < transactions.length; j++) {
+      const { tx } = transactions[j];
+      const logs = await web3.eth.getTransaction(tx);
+      if(logs.input.length > 5) {
+        await page.goto(`https://bscscan.com/address/${logs.to}#code`);
+        const abiSelector = '#js-copytextarea2';
+        await page.waitForSelector(abiSelector);
+        const abi = await page.$eval(abiSelector, ele => ele.innerHTML);
+        await abiDecoder.addABI(JSON.parse(abi));
+        const params = abiDecoder.decodeMethod(logs.input).params;
+        final[final.length - 1].transactions.push({
+          from: logs.from,
+          to: logs.to,
+          params: params.join(';'),
+          amount: logs.value,
+          ...transactions[j]
+        });
+        await delay(750);
+      } else {
+        final[final.length - 1].transactions.push({
+          from: logs.from,
+          to: logs.to,
+          params: null,
+          amount: logs.value,
+          ...transactions[j]
+        });
+      }
+    }
+  }
+  return final;
+};
 
+const saveData = (txs) => {
+  console.log(txs);
+  for(let i = 0; i < txs.length; i++) {
+    const data = txs[i];
+    for(let j = 0; j < data.transactions.length; j++) {
+      db.Transaction.create(data.transactions[j]).then(saved => {
+        console.log('saved');
+      }).catch(err => {
+        console.log(err);
+      })
+    }
+  }
 };
 
 (async () => {
@@ -211,12 +226,11 @@ const listenToTxs = (addr) => {
     width: 1920,
     height: 1080
   });
-  const walletsFresh = await fetchChildWallets(page, process.env.ADDRESS);
+  const walletsFresh = await fetchChildWallets(page, process.env.ADDRESS, 2);
   const transactions = await fetchAllTransactionHashes(page, walletsFresh);
+  const fetched = await fetchTxData(page, transactions);
   await page.close();
   await browser.close();
-  console.log(transactions);
-  // const walletsWithBlocks = await fetchBlockNumber(walletsFresh);
-  // const transactions = await fetchAllTransactionHashes(walletsWithBlocks);
-  // const transactionsWithData = await listenToTxs(transactions);
+  // time to save the results into db
+  saveData(fetched);
 })();

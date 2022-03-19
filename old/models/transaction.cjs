@@ -14,13 +14,14 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
   Transaction.init({
-    params: DataTypes.STRING,
-    amount: DataTypes.STRING,
-    hash: DataTypes.STRING,
-    isOut: DataTypes.BOOLEAN,
-    blockNumber: DataTypes.STRING,
+    timestamp: DataTypes.STRING,
     from: DataTypes.STRING,
-    to: DataTypes.STRING
+    to: DataTypes.STRING,
+    amount: DataTypes.STRING,
+    success: DataTypes.BOOLEAN,
+    fee: DataTypes.STRING,
+    blockNumber: DataTypes.STRING,
+    hash: DataTypes.STRING
   }, {
     sequelize,
     modelName: 'Transaction',
