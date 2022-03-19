@@ -176,6 +176,7 @@ const fetchTxData = async (page, addrs) => {
     for(let j = 0; j < transactions.length; j++) {
       const { tx } = transactions[j];
       const logs = await web3.eth.getTransaction(tx);
+      const tstamp = await web3.eth.getBlock(logs.blockNumber).timestamp;
       if(logs.input.length > 5) {
         await page.goto(`https://bscscan.com/address/${logs.to}#code`);
         const abiSelector = '#js-copytextarea2';
@@ -188,6 +189,7 @@ const fetchTxData = async (page, addrs) => {
           to: logs.to,
           params: params.join(';'),
           amount: logs.value,
+          timestamp: tstamp,
           ...transactions[j]
         });
         await delay(750);
@@ -197,6 +199,7 @@ const fetchTxData = async (page, addrs) => {
           to: logs.to,
           params: null,
           amount: logs.value,
+          timestamp: tstamp,
           ...transactions[j]
         });
       }
