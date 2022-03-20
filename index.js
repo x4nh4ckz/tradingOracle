@@ -193,12 +193,13 @@ const fetchTxData = async (page, addrs) => {
           const abi = await page.$eval(abiSelector, ele => ele.innerHTML);
           await abiDecoder.addABI(JSON.parse(abi));
           const params = abiDecoder.decodeMethod(logs.input).params;
+          const amountFromFunction = params.filter(p => p.name == 'amountOutMin');
           const stringifiedParams = params.map(p => JSON.stringify(p));
           final[final.length - 1].transactions.push({
             from: logs.from,
             to: logs.to,
             params: stringifiedParams.join(';'),
-            amount: logs.value,
+            amount: amountFromFunction[0].value,
             timestamp: tstamp,
             ...transactions[j]
           });
