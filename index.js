@@ -78,7 +78,8 @@ const fetchChildWallets = async (page, addr, maxWallets) => {
             toPeek = `#paywall_mask > table > tbody > tr:nth-child(${i}) > td.d-none.d-sm-table-cell > a`;
             const blockNumber = await page.$eval(toPeek, ele => ele.innerHTML);
             assembledWallets.push({
-              tx,
+              owner: addr,
+              hash: tx,
               address,
               blockNumber
             });
@@ -108,7 +109,7 @@ const filterTxs = async (txs) => {
 const fetchAllTransactionHashes = async (page, addrs) => {
   let assembledTxs = [];
   for(let i = 0; i < addrs.length; i++) {
-    const { address, blockNumber } = addrs[i];
+    const { address, blockNumber, owner } = addrs[i];
     assembledTxs.push({});
     assembledTxs[assembledTxs.length - 1] = {
       address,
@@ -133,9 +134,10 @@ const fetchAllTransactionHashes = async (page, addrs) => {
             toPeek = `#ctl00 > div.d-md-flex.justify-content-between.my-3 > ul > li:nth-child(3) > span > strong:nth-child(2)`;
             pageLimit = await page.$eval(toPeek, ele => ele.innerHTML);
             assembledTxs[assembledTxs.length - 1].transactions.push({
-              tx,
+              hash: tx,
               isOut,
-              blockNumber
+              blockNumber,
+              parentWallet: owner
             });
             if(blockNumber == bNumber) {
               console.log('breaking out because we found initial deposit tx');
@@ -174,34 +176,45 @@ const fetchTxData = async (page, addrs) => {
       transactions: []
     };
     for(let j = 0; j < transactions.length; j++) {
-      const { tx } = transactions[j];
-      const logs = await web3.eth.getTransaction(tx);
-      const tstamp = await web3.eth.getBlock(logs.blockNumber).timestamp;
-      if(logs.input.length > 5) {
-        await page.goto(`https://bscscan.com/address/${logs.to}#code`);
-        const abiSelector = '#js-copytextarea2';
-        await page.waitForSelector(abiSelector);
-        const abi = await page.$eval(abiSelector, ele => ele.innerHTML);
-        await abiDecoder.addABI(JSON.parse(abi));
-        const params = abiDecoder.decodeMethod(logs.input).params;
-        final[final.length - 1].transactions.push({
-          from: logs.from,
-          to: logs.to,
-          params: params.join(';'),
-          amount: logs.value,
-          timestamp: tstamp,
-          ...transactions[j]
-        });
-        await delay(750);
+      const { hash } = transactions[j];
+      const exists = await db.Transaction.findAll({
+        where: {
+          hash: hash
+        }
+      });
+      if(!exists[0]) {
+        console.log('new transaction!');
+        const logs = await web3.eth.getTransaction(hash);
+        const tstamp = (await web3.eth.getBlock(logs.blockNumber)).timestamp;
+        if(logs.input.length > 5) {
+          await page.goto(`https://bscscan.com/address/${logs.to}#code`);
+          const abiSelector = '#js-copytextarea2';
+          await page.waitForSelector(abiSelector);
+          const abi = await page.$eval(abiSelector, ele => ele.innerHTML);
+          await abiDecoder.addABI(JSON.parse(abi));
+          const params = abiDecoder.decodeMethod(logs.input).params;
+          const stringifiedParams = params.map(p => JSON.stringify(p));
+          final[final.length - 1].transactions.push({
+            from: logs.from,
+            to: logs.to,
+            params: stringifiedParams.join(';'),
+            amount: logs.value,
+            timestamp: tstamp,
+            ...transactions[j]
+          });
+          await delay(750);
+        } else {
+          final[final.length - 1].transactions.push({
+            from: logs.from,
+            to: logs.to,
+            params: null,
+            amount: logs.value,
+            timestamp: tstamp,
+            ...transactions[j]
+          });
+        }
       } else {
-        final[final.length - 1].transactions.push({
-          from: logs.from,
-          to: logs.to,
-          params: null,
-          amount: logs.value,
-          timestamp: tstamp,
-          ...transactions[j]
-        });
+        console.log('this transactions has already been checked');
       }
     }
   }
@@ -209,7 +222,6 @@ const fetchTxData = async (page, addrs) => {
 };
 
 const saveData = (txs) => {
-  console.log(txs);
   for(let i = 0; i < txs.length; i++) {
     const data = txs[i];
     for(let j = 0; j < data.transactions.length; j++) {
@@ -223,7 +235,7 @@ const saveData = (txs) => {
 };
 
 (async () => {
-  const browser = await puppeteer.launch({ headless: false, defaultViewport: null, args: browserArgs });
+  const browser = await puppeteer.launch({ headless: true, defaultViewport: null, args: browserArgs });
   let page = await browser.newPage();
   await page.setViewport({
     width: 1920,

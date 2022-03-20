@@ -29,6 +29,12 @@ module.exports = {
       to: {
         type: Sequelize.STRING
       },
+      timestamp: {
+        type: Sequelize.STRING
+      },
+      parentWallet: {
+        type: Sequelize.STRING
+      },
       createdAt: {
         allowNull: false,
         type: Sequelize.DATE

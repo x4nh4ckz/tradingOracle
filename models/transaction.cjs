@@ -20,7 +20,9 @@ module.exports = (sequelize, DataTypes) => {
     isOut: DataTypes.BOOLEAN,
     blockNumber: DataTypes.STRING,
     from: DataTypes.STRING,
-    to: DataTypes.STRING
+    to: DataTypes.STRING,
+    timestamp: DataTypes.STRING,
+    parentWallet: DataTypes.STRING
   }, {
     sequelize,
     modelName: 'Transaction',
